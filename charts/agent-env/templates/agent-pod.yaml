@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agent-cli
+  namespace: {{ .Values.name }}
+  labels:
+    app: agent-cli
+    agent: {{ .Values.name }}
+    role: agent
+spec:
+  serviceAccountName: agent-cli-sa
+  {{- if or (.Values.repos) (.Values.netbirdProxy.enabled) }}
+  initContainers:
+  {{- if .Values.repos }}
+    - name: clone-repos
+      image: alpine/git:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          {{- range $idx, $repo := .Values.repos }}
+          {{- $repoName := base $repo.hostPath }}
+          echo "Cloning /repos/{{ $repoName }} -> /workspace/{{ $repoName }}..."
+          git clone /repos/{{ $repoName }} /workspace/{{ $repoName }}
+          echo "[safe]" >> /workspace/.gitconfig
+          echo "    directory = /workspace/{{ $repoName }}" >> /workspace/.gitconfig
+          cat > /workspace/{{ $repoName }}/.git/hooks/pre-commit << 'HOOKEOF'
+          #!/bin/sh
+          branch=$(git symbolic-ref --short main 2>/dev/null)
+          if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+            echo "ERROR: Commits to $branch are not allowed from agent containers."
+            exit 1
+          fi
+          HOOKEOF
+          chmod +x /workspace/{{ $repoName }}/.git/hooks/pre-commit
+          echo "Installed pre-commit hook in /workspace/{{ $repoName }}"
+          {{- end }}
+          chown -R 1000:1000 /workspace
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        {{- range $idx, $repo := .Values.repos }}
+        - name: repo-{{ $idx }}
+          mountPath: /repos/{{ base $repo.hostPath }}
+        {{- end }}
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+    {{- end }}
+    {{- if .Values.netbirdProxy.enabled }}
+    - name: netbird-proxy
+      restartPolicy: Always
+      image: netbirdio/netbird:{{ .Values.netbirdProxy.tag }}
+      securityContext:
+        capabilities:
+          add: ["NET_ADMIN"]
+      envFrom:
+        - secretRef:
+            name: netbird-key
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+    {{- end }}
+  {{- end }}
+  containers:
+    - name: agent
+      image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        {{- if .Values.vcluster.enabled }}
+        - name: kubeconfig-vcluster
+          mountPath: /home/agent/.kube/vcluster
+          readOnly: true
+        {{- end }}
+        {{- range .Values.externalClusters }}
+        - name: kubeconfig-{{ .name }}
+          mountPath: /home/agent/.kube/{{ .name }}
+          readOnly: true
+        {{- end }}
+        {{- if .Values.agentConfig.enabled }}
+        - name: agent-config
+          mountPath: /workspace/CLAUDE.md
+          subPath: CLAUDE.md
+          readOnly: true
+        {{- end }}
+        {{- range $idx, $repo := .Values.repos }}
+        - name: repo-{{ $idx }}
+          mountPath: /repos/{{ base $repo.hostPath }}
+        {{- end }}
+      env:
+        {{- $kubeconfigPaths := list }}
+        {{- if .Values.vcluster.enabled }}
+        {{- $kubeconfigPaths = append $kubeconfigPaths "/home/agent/.kube/vcluster/config" }}
+        {{- end }}
+        {{- range .Values.externalClusters }}
+        {{- $kubeconfigPaths = append $kubeconfigPaths (printf "/home/agent/.kube/%s/config" .name) }}
+        {{- end }}
+        {{- if $kubeconfigPaths }}
+        - name: KUBECONFIG
+          value: {{ join ":" $kubeconfigPaths | quote }}
+        {{- end }}
+        - name: GIT_CONFIG_GLOBAL
+          value: /workspace/.gitconfig
+        {{- if .Values.vcluster.enabled }}
+        - name: CLUSTER_DOMAIN
+          value: {{ .Values.name }}.{{ .Values.baseDomain }}
+        {{- end }}
+        - name: GIT_SERVER
+          value: git://git-server.git-server.svc.cluster.local/k3s-bootstrap
+        {{- range .Values.extraEnv }}
+        - name: {{ .name }}
+          value: {{ .value | quote }}
+        {{- end }}
+      resources:
+        {{- toYaml .Values.resources | nindent 8 }}
+  volumes:
+    - name: workspace
+      emptyDir: {}
+    {{- if .Values.vcluster.enabled }}
+    - name: kubeconfig-vcluster
+      secret:
+        secretName: vc-vcluster
+        items:
+          - key: config
+            path: config
+    {{- end }}
+    {{- range .Values.externalClusters }}
+    - name: kubeconfig-{{ .name }}
+      secret:
+        secretName: {{ .secretName }}
+        items:
+          - key: config
+            path: config
+    {{- end }}
+    {{- range $idx, $repo := .Values.repos }}
+    - name: repo-{{ $idx }}
+      hostPath:
+        path: {{ $repo.hostPath }}
+        type: Directory
+    {{- end }}
+    {{- if .Values.agentConfig.enabled }}
+    - name: agent-config
+      configMap:
+        name: {{ .Values.agentConfig.configMapName }}
+    {{- end }}

@@ -1,0 +1,45 @@
+# Rendered by scripts/setup.sh: ${PUBLIC_REPO_ROOT} and ${CONFIG_REPO_ROOT} are
+# substituted with the host paths from your config.local.sh / config repo before
+# the manifest is copied into the VM. Do not apply this file directly.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: git-server
+  namespace: git-server
+  labels:
+    app: git-server
+spec:
+  containers:
+    - name: git-daemon
+      image: alpine:latest
+      command:
+        - /bin/sh
+        - -c
+        - apk add --no-cache git-daemon && git daemon --reuseaddr --export-all --verbose --base-path=/repo /repo
+      ports:
+        - containerPort: 9418
+          name: git
+          protocol: TCP
+      volumeMounts:
+        - name: repo
+          mountPath: /repo/k3s-bootstrap
+          readOnly: true
+        - name: config-repo
+          mountPath: /repo/k3s-bootstrap-config
+          readOnly: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+  volumes:
+    - name: repo
+      hostPath:
+        path: ${PUBLIC_REPO_ROOT}
+        type: Directory
+    - name: config-repo
+      hostPath:
+        path: ${CONFIG_REPO_ROOT}
+        type: Directory

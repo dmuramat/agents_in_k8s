@@ -1,0 +1,26 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: cilium
+  namespace: kube-system
+spec:
+  chart: cilium
+  repo: https://helm.cilium.io/
+  version: "1.19.2"
+  targetNamespace: kube-system
+  bootstrap: true
+  valuesContent: |-
+    cni:
+      binPath: /var/lib/rancher/k3s/data/cni
+      exclusive: true
+    kubeProxyReplacement: false
+    ipam:
+      mode: kubernetes
+    operator:
+      replicas: 1
+    hubble:
+      enabled: true
+      relay:
+        enabled: true
+      ui:
+        enabled: true

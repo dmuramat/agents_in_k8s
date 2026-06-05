@@ -1,0 +1,20 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: vcluster-allow-agent
+  namespace: {{ .Values.name }}
+spec:
+  endpointSelector:
+    matchLabels:
+      release: vcluster
+  ingress:
+    # Allow agent CLI pod to reach vCluster API via kubeconfig
+    - fromEndpoints:
+        - matchLabels:
+            role: agent
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP

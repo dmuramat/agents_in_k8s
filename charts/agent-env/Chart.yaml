@@ -1,0 +1,5 @@
+apiVersion: v2
+name: agent-env
+description: Per-agent development environment (namespace, agent pod, network policy)
+version: 0.1.0
+type: application

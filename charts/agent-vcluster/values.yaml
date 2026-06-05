@@ -1,0 +1,11 @@
+name: ""
+
+vcluster:
+  chartVersion: "0.33.1"
+  resourceQuota:
+    requests:
+      cpu: "8"
+      memory: 16Gi
+    limits:
+      cpu: "16"
+      memory: 32Gi

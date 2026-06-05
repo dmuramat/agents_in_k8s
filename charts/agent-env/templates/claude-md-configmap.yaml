@@ -1,0 +1,97 @@
+{{- if and .Values.agentConfig.enabled (eq .Values.agentConfig.configMapName "claude-md") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-md
+  namespace: {{ .Values.name }}
+data:
+  CLAUDE.md: |
+    # Agent Environment
+
+    You are running inside an isolated agent container in a Kubernetes cluster.
+
+    ## Your workspace
+
+    - `/workspace/<repo-name>/` — cloned git repos (read-write)
+    - Repos have a pre-commit hook that blocks commits on `main`/`master`
+    - Create feature branches, commit, and push to origin (your host machine's repo)
+
+    ## Kubernetes access
+
+    You have `kubectl` access to a dedicated vCluster (virtual Kubernetes cluster).
+    The vCluster is isolated — you have full admin access inside it but cannot
+    affect the host cluster or other agents.
+
+    ```bash
+    kubectl get nodes        # your vCluster
+    kubectl get pods -A      # see what's running
+    helm install ...         # deploy Helm charts
+    ```
+
+    ## Deploying services
+
+    Deploy your application into the vCluster using `kubectl apply`, `helm install`,
+    or by committing manifests that ArgoCD syncs. The vCluster runs Traefik with
+    Gateway API for routing.
+
+    ### Exposing services via HTTPS
+
+    Your cluster domain is available as `$CLUSTER_DOMAIN`. To expose a service:
+
+    1. Deploy your service in the vCluster (e.g. in namespace `my-app`)
+    2. Create a Gateway API HTTPRoute:
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    metadata:
+      name: my-backend
+      namespace: my-app
+    spec:
+      parentRefs:
+        - name: traefik-gateway
+          namespace: kube-system
+      hostnames:
+        - "my-backend.${CLUSTER_DOMAIN}"
+      rules:
+        - backendRefs:
+            - name: my-backend-service
+              port: 8080
+    ```
+
+    The service will be accessible at `https://my-backend.${CLUSTER_DOMAIN}` from
+    the host machine (after adding the hostname to `/etc/hosts`).
+
+    ### TLS
+
+    Traefik inside the vCluster terminates TLS. This mirrors a real test/prod setup.
+    For local development, you can use self-signed certificates or cert-manager with
+    a local CA.
+
+    ## Network restrictions
+
+    Your agent container has restricted egress. You can reach:
+    - **In-cluster**: vCluster API, git server, MCP services
+    - **Documentation**: github.com, kubernetes.io, helm.sh, go.dev, pkg.go.dev, pypi.org, npmjs.com, stackoverflow.com, artifacthub.io, docs.docker.com
+    - **Registries**: docker.io, ghcr.io, registry.k8s.io
+    - **APIs**: api.anthropic.com
+    - **Certs**: letsencrypt.org
+
+    All other external traffic is blocked.
+
+    ## Tools available
+
+    - `claude` — Claude Code CLI
+    - `kubectl` / `helm` — Kubernetes tools (connected to your vCluster)
+    - `git` — version control
+    - `python3` / `pip` — Python 3
+    - `node` / `npm` — Node.js
+    - `curl` / `jq` — HTTP and JSON tools
+
+    ## Important constraints
+
+    - Do NOT commit to `main` or `master` — the pre-commit hook will reject it
+    - All pods you deploy in the vCluster MUST have resource requests and limits set
+    - The vCluster has a ResourceQuota — check `kubectl describe resourcequota` if pods won't schedule
+    - Push branches to origin to get your changes back to the host machine
+{{- end }}

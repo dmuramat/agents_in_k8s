@@ -1,0 +1,6 @@
+# Per-machine pointer to the (private) config repo + optional VM overrides.
+# Copy scripts/config.local.sh.example to create it.
+scripts/config.local.sh
+
+# Host-side fingerprint of VM-creation-time settings (used for drift detection).
+scripts/.vm-fingerprint

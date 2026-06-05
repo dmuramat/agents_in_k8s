@@ -1,0 +1,22 @@
+# Per-machine configuration for k3s-bootstrap. NOT committed (see .gitignore).
+#
+#   cp scripts/config.local.sh.example scripts/config.local.sh
+#   $EDITOR scripts/config.local.sh
+#
+# This is the ONE host-specific file the cluster needs. Everything else that
+# defines the cluster (agents, DNS, egress, VM size, mounts) lives in the
+# config repo it points at.
+
+# REQUIRED. Absolute path to your cloned config repo on this machine.
+# Clone the template (k3s-bootstrap-config-template), make it private, edit it,
+# then point here. '~' is expanded.
+CONFIG_REPO_ROOT="${HOME}/usr/src/k3s-bootstrap-config"
+
+# OPTIONAL per-machine VM-size overrides. Leave commented to use the values
+# committed in the config repo's cluster.conf. Uncomment only when this Mac
+# needs different sizing (e.g. a smaller laptop). These take precedence over
+# cluster.conf. NOTE: changing any of these after the VM exists requires a
+# teardown + setup (setup.sh will refuse to start otherwise).
+# CPUS=4
+# MEMORY=16
+# DISK=100

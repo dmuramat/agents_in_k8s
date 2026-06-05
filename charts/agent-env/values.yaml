@@ -1,0 +1,81 @@
+name: ""
+baseDomain: localhost
+
+vcluster:
+  enabled: true
+
+netbirdProxy:
+  enabled: false
+  tag: 0.67.3
+
+agentConfig:
+  enabled: true
+  configMapName: claude-md
+
+extraEnv: []
+# - name: KUBERNETES_SERVICE_HOST
+#   value: "my-cluster.example.com"
+# - name: KUBERNETES_SERVICE_PORT
+#   value: "6443"
+
+externalClusters: []
+# - name: prod-readonly
+#   secretName: prod-kubeconfig
+#   # Secret must exist in agent namespace with a 'config' key containing kubeconfig.
+#   # Create with: kubectl create secret generic <secretName> -n <agent-name> --from-file=config=./kubeconfig
+
+repos: []
+# - hostPath: /Users/me/projects/myapp
+# - hostPath: /Users/me/projects/shared-lib
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+image:
+  repository: agent-cli
+  tag: latest
+  pullPolicy: Never
+
+egress:
+  docs:
+    - "github.com"
+    - "*.githubusercontent.com"
+    - "kubernetes.io"
+    - "*.kubernetes.io"
+    - "helm.sh"
+    - "*.helm.sh"
+    - "go.dev"
+    - "pkg.go.dev"
+    - "proxy.golang.org"
+    - "sum.golang.org"
+    - "pypi.org"
+    - "files.pythonhosted.org"
+    - "npmjs.com"
+    - "registry.npmjs.org"
+    - "artifacthub.io"
+    - "docs.docker.com"
+    - "stackoverflow.com"
+  registries:
+    - "docker.io"
+    - "*.docker.io"
+    - "ghcr.io"
+    - "registry.k8s.io"
+  apis:
+    - "api.anthropic.com"
+  certs: []
+  # Site-specific egress (e.g. an overlay-network API server reachable only by
+  # IP, or a private FQDN suffix) belongs in the per-agent file in the config
+  # repo, not in these neutral chart defaults. Example:
+  #   apis:
+  #     - "*.your-overlay.example"
+  #   cidrs:
+  #     - cidr: "10.0.0.10/32"
+  #       ports:
+  #         - port: "6443"
+  #           protocol: "TCP"
+  cidrs: []

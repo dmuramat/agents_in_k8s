@@ -1,0 +1,110 @@
+# Agent environments + vClusters are discovered from agent value files that live
+# in the (private) config repo, while the Helm charts come from this (public)
+# repo. Each Application is therefore multi-source:
+#   - source 1: this repo, provides the chart (path) + references the values
+#   - source 2: the config repo, exposed as `$values` for valueFiles
+# Both repos are served by the in-cluster git-server (see setup.sh).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: agent-environments
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: git://git-server.git-server.svc.cluster.local/k3s-bootstrap-config
+        revision: main
+        files:
+          - path: "agents/*.yaml"
+  template:
+    metadata:
+      name: "agent-env-{{ .name }}"
+      namespace: argocd
+      labels:
+        agent: "{{ .name }}"
+        component: env
+    spec:
+      project: default
+      sources:
+        - repoURL: git://git-server.git-server.svc.cluster.local/k3s-bootstrap
+          targetRevision: main
+          path: charts/agent-env
+          helm:
+            valueFiles:
+              - "$values/agents/{{ .name }}.yaml"
+        - repoURL: git://git-server.git-server.svc.cluster.local/k3s-bootstrap-config
+          targetRevision: main
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{ .name }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: agent-vclusters
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: git://git-server.git-server.svc.cluster.local/k3s-bootstrap-config
+              revision: main
+              files:
+                - path: "agents/*.yaml"
+          - list:
+              elementsYaml: |
+                {{- $create := true -}}
+                {{- if hasKey . "vcluster" -}}
+                  {{- if .vcluster -}}
+                    {{- if hasKey .vcluster "enabled" -}}
+                      {{- if eq .vcluster.enabled false -}}
+                        {{- $create = false -}}
+                      {{- end -}}
+                    {{- end -}}
+                  {{- end -}}
+                {{- end -}}
+                {{- if $create -}}
+                [{"create": true}]
+                {{- else -}}
+                []
+                {{- end -}}
+  template:
+    metadata:
+      name: "agent-vcluster-{{ .name }}"
+      namespace: argocd
+      labels:
+        agent: "{{ .name }}"
+        component: vcluster
+    spec:
+      project: default
+      sources:
+        - repoURL: git://git-server.git-server.svc.cluster.local/k3s-bootstrap
+          targetRevision: main
+          path: charts/agent-vcluster
+          helm:
+            valueFiles:
+              - "$values/agents/{{ .name }}.yaml"
+        - repoURL: git://git-server.git-server.svc.cluster.local/k3s-bootstrap-config
+          targetRevision: main
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{ .name }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

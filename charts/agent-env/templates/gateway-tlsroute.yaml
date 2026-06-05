@@ -1,0 +1,20 @@
+{{- if .Values.vcluster.enabled }}
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: {{ .Values.name }}-tls
+  namespace: {{ .Values.name }}
+spec:
+  parentRefs:
+    - name: agent-tls-gateway
+      namespace: kube-system
+      sectionName: tls-passthrough
+  hostnames:
+    - "*.{{ .Values.name }}.{{ .Values.baseDomain }}"
+  rules:
+    - backendRefs:
+        # vCluster syncs services to host namespace with naming convention:
+        # <release-name>-x-<vcluster-namespace>-x-<vcluster-name>
+        - name: traefik-x-kube-system-x-vcluster
+          port: 443
+{{- end }}

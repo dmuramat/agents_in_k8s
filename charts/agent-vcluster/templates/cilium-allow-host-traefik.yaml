@@ -1,0 +1,27 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: vcluster-allow-host-traefik
+  namespace: {{ .Values.name }}
+spec:
+  endpointSelector:
+    matchLabels:
+      vcluster.loft.sh/managed-by: vcluster
+      app.kubernetes.io/name: traefik
+  ingress:
+    # Allow host Traefik to reach vCluster's synced Traefik pod
+    # for TLS passthrough routing
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:app.kubernetes.io/name: traefik
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP

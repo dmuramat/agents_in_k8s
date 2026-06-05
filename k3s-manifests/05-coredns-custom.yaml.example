@@ -1,0 +1,29 @@
+# EXAMPLE ONLY -- not applied by setup.sh.
+#
+# The active coredns-custom ConfigMap is supplied by your config repo at
+# k3s-manifests/05-coredns-custom.yaml (setup.sh copies it after the public
+# manifests). k3s's coredns-custom is a SINGLE ConfigMap, so it cannot be split
+# across repos -- the config repo owns the whole thing. Copy this file there as a
+# starting point and add any site-specific zones (e.g. a VPN/overlay resolver).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  # Override the upstream DNS forwarder.
+  # The colima VM's /etc/resolv.conf points to 192.168.5.3 which has nothing
+  # listening on :53, so CoreDNS cannot resolve external names. This override
+  # forwards to public DNS instead.
+  forward.override: |
+    forward . 8.8.8.8 8.8.4.4 {
+      prefer_udp
+    }
+
+  # Add site-specific zones here, e.g. a private overlay-network resolver:
+  # example.server: |
+  #   internal.example {
+  #       errors
+  #       cache 30
+  #       forward . 10.0.0.53
+  #   }

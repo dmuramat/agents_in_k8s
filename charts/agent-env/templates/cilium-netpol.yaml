@@ -1,0 +1,106 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: agent-isolation
+  namespace: {{ .Values.name }}
+spec:
+  endpointSelector:
+    matchLabels:
+      role: agent
+
+  # No egressDeny needed — having egress rules implicitly denies
+  # everything not explicitly allowed (Cilium default-deny behavior).
+  # An explicit egressDeny would override the FQDN allow rules.
+
+  egress:
+    # DNS resolution (kube-dns) — the dns rules trigger Cilium's DNS proxy
+    # which is required for toFQDNs rules to learn IP→FQDN mappings
+    - icmps:
+        - fields:
+            - type: 8
+              family: IPv4
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # MCP services in same namespace
+    - toEndpoints:
+        - matchLabels:
+            role: mcp
+
+    {{- if .Values.vcluster.enabled }}
+    # vCluster API in same namespace
+    - toEndpoints:
+        - matchLabels:
+            app: vcluster
+    {{- end }}
+
+    # Git server
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: git-server
+            app: git-server
+      toPorts:
+        - ports:
+            - port: "9418"
+              protocol: TCP
+
+    # Documentation sites
+    - toFQDNs:
+        {{- range .Values.egress.docs }}
+        - matchPattern: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # Container registries
+    - toFQDNs:
+        {{- range .Values.egress.registries }}
+        - matchPattern: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # APIs
+    - toFQDNs:
+        {{- range .Values.egress.apis }}
+        - matchPattern: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # Certificate authorities
+    - toFQDNs:
+        {{- range .Values.egress.certs }}
+        - matchPattern: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    {{- range .Values.egress.cidrs }}
+    - toCIDR:
+        - {{ .cidr | quote }}
+      toPorts:
+      - ports:
+      {{- range .ports }}
+        - port: {{ .port | quote }}
+          protocol: {{ .protocol | default "TCP" }}
+      {{- end }} 
+    {{- end }}
+        

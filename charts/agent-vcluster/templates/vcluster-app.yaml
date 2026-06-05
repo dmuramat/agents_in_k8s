@@ -1,0 +1,64 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vcluster-{{ .Values.name }}
+  namespace: argocd
+  labels:
+    agent: {{ .Values.name }}
+    component: vcluster
+spec:
+  project: default
+  source:
+    repoURL: https://charts.loft.sh
+    chart: vcluster
+    targetRevision: {{ .Values.vcluster.chartVersion | quote }}
+    helm:
+      releaseName: vcluster
+      valuesObject:
+        telemetry:
+          enabled: false
+        controlPlane:
+          distro:
+            k8s:
+              enabled: true
+              version: "v1.32.3"
+          proxy:
+            extraSANs:
+              - vcluster.{{ .Values.name }}.svc.cluster.local
+        policies:
+          podSecurityStandard: baseline
+          networkPolicy:
+            enabled: true
+          resourceQuota:
+            enabled: true
+            quota:
+              requests.cpu: {{ .Values.vcluster.resourceQuota.requests.cpu | quote }}
+              requests.memory: {{ .Values.vcluster.resourceQuota.requests.memory }}
+              limits.cpu: {{ .Values.vcluster.resourceQuota.limits.cpu | quote }}
+              limits.memory: {{ .Values.vcluster.resourceQuota.limits.memory }}
+          limitRange:
+            enabled: true
+            default:
+              cpu: 500m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            defaultRequest:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: 128Mi
+        sync:
+          toHost:
+            services:
+              enabled: true
+        exportKubeConfig:
+          context: {{ .Values.name }}
+          server: https://vcluster.{{ .Values.name }}.svc.cluster.local:443
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Values.name }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

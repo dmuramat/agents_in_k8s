@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://traefik.github.io/charts
+    chart: traefik
+    targetRevision: "39.0.7"
+    helm:
+      valuesObject:
+        providers:
+          kubernetesGateway:
+            enabled: true
+            experimentalChannel: true
+        gateway:
+          enabled: true
+        ports:
+          websecure:
+            port: 443
+            exposedPort: 443
+            # This allows the entrypoint to handle TLS/TCP/HTTP dynamic routing
+            protocol: TCP
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

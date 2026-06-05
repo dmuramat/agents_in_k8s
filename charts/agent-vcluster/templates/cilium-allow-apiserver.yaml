@@ -1,0 +1,23 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: vcluster-allow-apiserver
+  namespace: {{ .Values.name }}
+spec:
+  endpointSelector:
+    matchLabels:
+      release: vcluster
+  egress:
+    # Allow vCluster syncer to reach the host K8s API server
+    - toEntities:
+        - kube-apiserver
+    # Allow vCluster to reach K8s API via ClusterIP (10.43.0.0/16)
+    - toCIDR:
+        - 10.43.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+

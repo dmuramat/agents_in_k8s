@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: register-vcluster-{{ .Values.name }}
+  namespace: {{ .Values.name }}
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      serviceAccountName: vcluster-registrar
+      restartPolicy: OnFailure
+      containers:
+        - name: register
+          image: alpine/k8s:1.32.3
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              AGENT_NAME="{{ .Values.name }}"
+              {{- if .Values.vcluster.enabled }}
+              VCLUSTER_SECRET="vc-vcluster"
+              {{- end }}
+              NAMESPACE="{{ .Values.name }}"
+
+              echo "Waiting for vCluster Secret ${VCLUSTER_SECRET}..."
+              for i in $(seq 1 60); do
+                if kubectl get secret "${VCLUSTER_SECRET}" -n "${NAMESPACE}" 2>/dev/null; then
+                  echo "Secret found."
+                  break
+                fi
+                if [ "$i" = "60" ]; then
+                  echo "Timed out waiting for vCluster Secret."
+                  exit 1
+                fi
+                echo "  attempt ${i}/60, retrying in 10s..."
+                sleep 10
+              done
+
+              DECODED=$(kubectl get secret "${VCLUSTER_SECRET}" -n "${NAMESPACE}" -o jsonpath='{.data.config}' | base64 -d)
+              SERVER_URL="https://vcluster.${NAMESPACE}.svc.cluster.local:443"
+              CERT_DATA=$(echo "${DECODED}" | grep 'client-certificate-data' | head -1 | awk '{print $2}')
+              KEY_DATA=$(echo "${DECODED}" | grep 'client-key-data' | head -1 | awk '{print $2}')
+
+              cat <<EOSECRET | kubectl apply -f -
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: cluster-${AGENT_NAME}
+                namespace: argocd
+                labels:
+                  argocd.argoproj.io/secret-type: cluster
+                  agent: ${AGENT_NAME}
+                  purpose: agent-vcluster
+              type: Opaque
+              stringData:
+                name: ${AGENT_NAME}
+                server: ${SERVER_URL}
+                config: |
+                  {
+                    "tlsClientConfig": {
+                      "insecure": true,
+                      "certData": "${CERT_DATA}",
+                      "keyData": "${KEY_DATA}"
+                    }
+                  }
+              EOSECRET
+              echo "ArgoCD cluster secret created for ${AGENT_NAME}"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

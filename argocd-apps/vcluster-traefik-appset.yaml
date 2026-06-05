@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: vcluster-traefik
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            purpose: agent-vcluster
+  template:
+    metadata:
+      name: "traefik-{{.name}}"
+      namespace: argocd
+    spec:
+      project: default
+      source:
+        repoURL: https://traefik.github.io/charts
+        chart: traefik
+        targetRevision: "39.0.7"
+        helm:
+          releaseName: traefik
+          valuesObject:
+            providers:
+              kubernetesGateway:
+                enabled: true
+            gateway:
+              enabled: true
+            service:
+              type: ClusterIP
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 256Mi
+      destination:
+        server: "{{.server}}"
+        namespace: kube-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
