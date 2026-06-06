@@ -218,21 +218,40 @@ URL:  https://<HOST>
 ## Troubleshooting (map symptom -> cause)
 
 - **Self-test `https`/`http` returns nothing / curl exit 7, `no available server`**
-  Backend endpoint not ready. Check step "readiness" above. 99% of the time the
-  Deployment is missing a `readinessProbe`. Confirm with the endpointslice query.
+  Backend endpoint not ready. Two common causes: the Deployment has no
+  `readinessProbe` (add one — see the readiness rule above), or the pod hit the
+  vCluster condition-sync race below. Confirm with the endpointslice query.
+
+- **Pod is `Running` and its container is ready, but the endpoint stays
+  `ready=false` and the pod `Ready` condition is stuck `False`**
+  This is a **vCluster pod-condition sync race**, not a probe fault. Tell-tale
+  sign — an impossible-on-a-real-kubelet contradiction in one pod:
+  ```bash
+  kubectl get pod <pod> -n <ns> -o jsonpath=\
+'cs.ready={.status.containerStatuses[0].ready} ContainersReady={.status.conditions[?(@.type=="ContainersReady")].status}{"\n"}'
+  # cs.ready=true while ContainersReady=False  => the condition never synced
+  ```
+  Tuning the probe will not help (the probe already passes). The deterministic
+  unblock is to stop gating the endpoint on the pod `Ready` condition:
+  ```bash
+  kubectl patch svc <svc> -n <ns> -p '{"spec":{"publishNotReadyAddresses":true}}'
+  ```
+  Mostly seen only in emulated/sandbox vClusters; a real vCluster syncs the
+  condition correctly, so don't bake this into normal manifests.
 
 - **Can't connect to the Traefik ClusterIP at all (exit 7 on every host)**
-  vCluster Traefik's own Pod is `Ready=False`, so its Service has no ready
+  vCluster Traefik's own Pod shows `Ready=False`, so its Service has no ready
   endpoint. Check:
   ```bash
   kubectl get pod -n kube-system -l app.kubernetes.io/name=traefik \
     -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
   ```
-  If `False` while `curl http://<traefikPodIP>:8080/ping` returns `OK`, the
-  readiness probe is too aggressive for this node. This is a **cluster-level**
-  issue (Traefik is managed by ArgoCD — patching it in-cluster is reverted by
-  self-heal). Report it to the user; the fix lives in the `k3s-bootstrap` repo
-  (loosen Traefik's `readinessProbe`), not in your namespace.
+  If `False` while `curl http://<traefikPodIP>:8080/ping` returns `OK`, it's the
+  same condition-sync race hitting the ArgoCD-managed Traefik. You can't fix it
+  in-cluster (self-heal reverts patches) and a probe tweak is not a reliable
+  cure. Report it to the user; on a real vCluster Traefik comes up `Ready` on its
+  own. Meanwhile you can still validate routing by curling the Traefik **pod IP**
+  directly (`:8000` for HTTP, `:8443` for HTTPS) instead of the Service.
 
 - **Browser fails but the in-cluster self-test passes**
   The vCluster is fine; the problem is host-side: colima not exposing :443,
