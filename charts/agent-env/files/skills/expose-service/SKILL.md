@@ -57,25 +57,31 @@ HOST="app.$CLUSTER_DOMAIN"   # browser hostname (must end in .$CLUSTER_DOMAIN)
 PORT=80                      # Service port
 TARGET=8080                  # container port your app listens on
 IMAGE=mendhak/http-https-echo:34   # replace with your image
+GW_NS=kube-system            # Traefik's namespace — the shared Gateway + cert live here
 ```
 
-### 1. Namespace + self-signed wildcard cert
+The Gateway and its TLS cert live in Traefik's namespace (`$GW_NS`), shared by
+every service you expose; each app keeps only its Deployment, Service, and
+HTTPRoute in its own namespace. A Gateway's `certificateRefs` always resolve in
+the Gateway's own namespace, so the cert secret must sit there alongside it.
 
-The vCluster Traefik must present a cert matching the SNI. A self-signed
-wildcard for `*.$CLUSTER_DOMAIN` covers every service you expose (browser will
-warn once; that's expected for dev).
+### 1. App namespace + shared wildcard cert (in Traefik's namespace)
+
+The vCluster Traefik must present a cert matching the SNI. One self-signed
+wildcard for `*.$CLUSTER_DOMAIN` covers every service. Create it once; re-runs
+reuse it (regenerating it would rotate the cert out from under other services).
 
 ```bash
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
-openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -keyout /tmp/$NS-tls.key -out /tmp/$NS-tls.crt \
-  -subj "/CN=*.$CLUSTER_DOMAIN" \
-  -addext "subjectAltName=DNS:*.$CLUSTER_DOMAIN,DNS:$CLUSTER_DOMAIN"
-
-kubectl create secret tls wildcard-tls -n "$NS" \
-  --cert=/tmp/$NS-tls.crt --key=/tmp/$NS-tls.key \
-  --dry-run=client -o yaml | kubectl apply -f -
+if ! kubectl get secret wildcard-tls -n "$GW_NS" >/dev/null 2>&1; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout /tmp/wildcard-tls.key -out /tmp/wildcard-tls.crt \
+    -subj "/CN=*.$CLUSTER_DOMAIN" \
+    -addext "subjectAltName=DNS:*.$CLUSTER_DOMAIN,DNS:$CLUSTER_DOMAIN"
+  kubectl create secret tls wildcard-tls -n "$GW_NS" \
+    --cert=/tmp/wildcard-tls.crt --key=/tmp/wildcard-tls.key
+fi
 ```
 
 ### 2. Deployment (WITH readinessProbe) + Service
@@ -114,50 +120,63 @@ spec:
 YAML
 ```
 
-### 3. Gateway (HTTP + HTTPS) + HTTPRoute
+### 3. Shared Gateway (in Traefik's namespace) + HTTPRoute (with your app)
 
-One Gateway per namespace is fine; add more HTTPRoutes later for more services.
-The HTTPS listener on port **8443** maps to Traefik's `websecure` entrypoint —
-this is where the host delivers passthrough TLS.
+The Gateway lives in `$GW_NS` next to Traefik and is shared by all services —
+`kubectl apply` is idempotent, so re-running is safe; it does not need to be
+recreated per app. `allowedRoutes.namespaces.from: All` lets HTTPRoutes in any
+namespace attach. The HTTPS listener on port **8443** maps to Traefik's
+`websecure` entrypoint, where the host delivers passthrough TLS. Traefik watches
+Gateways cluster-wide, so it serves this one even though it lives in `$GW_NS`.
 
 ```bash
 cat <<YAML | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
-metadata: { name: web-gateway, namespace: $NS }
+metadata: { name: web-gateway, namespace: $GW_NS }
 spec:
   gatewayClassName: traefik
   listeners:
     - name: web
       protocol: HTTP
       port: 8000
-      allowedRoutes: { namespaces: { from: Same } }
+      allowedRoutes: { namespaces: { from: All } }
     - name: websecure
       protocol: HTTPS
       port: 8443
       tls:
         mode: Terminate
         certificateRefs: [{ name: wildcard-tls }]
-      allowedRoutes: { namespaces: { from: Same } }
----
+      allowedRoutes: { namespaces: { from: All } }
+YAML
+```
+
+The HTTPRoute stays in the app namespace, so its `backendRefs` to your Service
+resolve locally with no ReferenceGrant. It attaches across namespaces to the
+shared Gateway by naming its namespace in `parentRefs`.
+
+```bash
+cat <<YAML | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata: { name: $NAME, namespace: $NS }
 spec:
   parentRefs:
-    - { name: web-gateway, sectionName: web }
-    - { name: web-gateway, sectionName: websecure }
+    - { name: web-gateway, namespace: $GW_NS, sectionName: web }
+    - { name: web-gateway, namespace: $GW_NS, sectionName: websecure }
   hostnames: ["$HOST"]
   rules:
     - backendRefs: [{ name: $NAME, port: $PORT }]
 YAML
 ```
 
-Confirm both listeners are programmed and the route attached:
+Confirm the listeners are programmed and your route attached:
 
 ```bash
-kubectl get gateway web-gateway -n "$NS" \
+kubectl get gateway web-gateway -n "$GW_NS" \
   -o jsonpath='{range .status.listeners[*]}{.name}={.attachedRoutes} routes{"\n"}{end}'
+kubectl get httproute "$NAME" -n "$NS" \
+  -o jsonpath='{.status.parents[*].conditions[?(@.type=="Accepted")].status}{"\n"}'
 ```
 
 ### 4. Self-test from inside the cluster (do this BEFORE telling the user to open a browser)
@@ -224,8 +243,23 @@ URL:  https://<HOST>
   The HTTPRoute `hostnames` must match the SNI exactly and end in
   `.$CLUSTER_DOMAIN` so the host's passthrough TLSRoute selects it.
 
+- **HTTPRoute not attaching (`attachedRoutes: 0`, Accepted=False)**
+  The shared Gateway must allow your namespace (`allowedRoutes.namespaces.from:
+  All`) and your `parentRefs` must include the Gateway's namespace
+  (`namespace: $GW_NS`). If you instead move the HTTPRoute *into* `$GW_NS`, its
+  cross-namespace `backendRef` to a Service in `$NS` then needs a
+  `ReferenceGrant` in `$NS` — keeping the route with the app avoids that.
+
 ## Cleanup
 
 ```bash
-kubectl delete namespace "$NS"
+kubectl delete namespace "$NS"   # removes the app, Service, and its HTTPRoute
+```
+
+The shared Gateway and wildcard cert in `$GW_NS` are intentionally left in place
+for other services. Remove them only when nothing else uses them:
+
+```bash
+kubectl delete gateway web-gateway -n "$GW_NS"
+kubectl delete secret wildcard-tls -n "$GW_NS"
 ```
