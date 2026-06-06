@@ -93,6 +93,24 @@ spec:
           mountPath: /workspace/CLAUDE.md
           subPath: CLAUDE.md
           readOnly: true
+        {{- if .Values.vcluster.enabled }}
+        {{- range $path, $_ := .Files.Glob "files/skills/**/SKILL.md" }}
+        {{- $name := dir $path | base }}
+        # Same skill, delivered to each CLI's native discovery path.
+        - name: agent-skills
+          mountPath: /home/agent/.claude/skills/{{ $name }}/SKILL.md
+          subPath: {{ $name }}
+          readOnly: true
+        - name: agent-skills
+          mountPath: /home/agent/.gemini/commands/{{ $name }}.toml
+          subPath: {{ $name }}.toml
+          readOnly: true
+        - name: agent-skills
+          mountPath: /home/agent/.config/opencode/commands/{{ $name }}.md
+          subPath: {{ $name }}.md
+          readOnly: true
+        {{- end }}
+        {{- end }}
         {{- end }}
         {{- range $idx, $repo := .Values.repos }}
         - name: repo-{{ $idx }}
@@ -153,4 +171,9 @@ spec:
     - name: agent-config
       configMap:
         name: {{ .Values.agentConfig.configMapName }}
+    {{- if .Values.vcluster.enabled }}
+    - name: agent-skills
+      configMap:
+        name: agent-skills
+    {{- end }}
     {{- end }}

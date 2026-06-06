@@ -1,0 +1,231 @@
+---
+name: expose-service
+description: Expose an HTTP service running in this agent's vCluster so it can be reached from the user's browser at https://<name>.<CLUSTER_DOMAIN>. Use when the user asks to "expose", "publish", "reach in the browser", set up a Gateway/HTTPRoute/ingress, or debug why a deployed web app/page is unreachable or blank.
+---
+
+# Expose a service in the vCluster to the browser
+
+This cluster routes browser traffic like this:
+
+```
+Mac browser  https://<name>.<CLUSTER_DOMAIN>
+   -> (Chrome maps *.localhost to 127.0.0.1; other browsers need /etc/hosts)
+host Traefik :443  (TLS passthrough, matches SNI *.<CLUSTER_DOMAIN>)
+   -> synced Service  traefik-x-kube-system-x-vcluster:443
+vCluster Traefik :8443 (websecure) — TERMINATES TLS here
+   -> HTTPRoute -> your Service -> your Pod
+```
+
+You only control the vCluster (your `kubectl`). Your job is the part from the
+vCluster Traefik inward: a TLS cert, a Gateway with an HTTPS listener, an
+HTTPRoute, and a workload **that has a readiness probe**.
+
+`$CLUSTER_DOMAIN` is already set in your env (e.g. `agent-setup-debug.localhost`).
+Pick a hostname under it, e.g. `app.$CLUSTER_DOMAIN`.
+
+---
+
+## The one rule that bites everyone: readiness probes
+
+On this cluster a Pod gets **zero traffic** until its endpoint is `ready:true`,
+and the endpoint only goes ready when the Pod's `Ready` condition is `True`.
+**A container with no `readinessProbe` may never be marked Ready here** — it will
+look healthy (`kubectl get pod` shows `1/1`) but Traefik will answer
+`no available server` and ClusterIPs will refuse connections.
+
+> Always give every workload you expose a `readinessProbe`. This is the #1 cause
+> of "I deployed it but the page is blank/unreachable."
+
+Verify after deploying:
+
+```bash
+kubectl get endpointslice -n <ns> -l kubernetes.io/service-name=<svc> \
+  -o jsonpath='{range .items[*].endpoints[*]}{.addresses} ready={.conditions.ready}{"\n"}{end}'
+# want: ready=true
+```
+
+---
+
+## Steps
+
+Set variables (edit these):
+
+```bash
+NS=app                       # namespace for your app
+NAME=app                     # service/route name
+HOST="app.$CLUSTER_DOMAIN"   # browser hostname (must end in .$CLUSTER_DOMAIN)
+PORT=80                      # Service port
+TARGET=8080                  # container port your app listens on
+IMAGE=mendhak/http-https-echo:34   # replace with your image
+```
+
+### 1. Namespace + self-signed wildcard cert
+
+The vCluster Traefik must present a cert matching the SNI. A self-signed
+wildcard for `*.$CLUSTER_DOMAIN` covers every service you expose (browser will
+warn once; that's expected for dev).
+
+```bash
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout /tmp/$NS-tls.key -out /tmp/$NS-tls.crt \
+  -subj "/CN=*.$CLUSTER_DOMAIN" \
+  -addext "subjectAltName=DNS:*.$CLUSTER_DOMAIN,DNS:$CLUSTER_DOMAIN"
+
+kubectl create secret tls wildcard-tls -n "$NS" \
+  --cert=/tmp/$NS-tls.crt --key=/tmp/$NS-tls.key \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+### 2. Deployment (WITH readinessProbe) + Service
+
+```bash
+cat <<YAML | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: $NAME, namespace: $NS, labels: { app: $NAME } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: $NAME } }
+  template:
+    metadata: { labels: { app: $NAME } }
+    spec:
+      containers:
+        - name: $NAME
+          image: $IMAGE
+          ports: [{ containerPort: $TARGET }]
+          # REQUIRED on this cluster — without it the pod never gets traffic.
+          readinessProbe:
+            tcpSocket: { port: $TARGET }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: $NAME, namespace: $NS }
+spec:
+  selector: { app: $NAME }
+  ports: [{ name: http, port: $PORT, targetPort: $TARGET }]
+YAML
+```
+
+### 3. Gateway (HTTP + HTTPS) + HTTPRoute
+
+One Gateway per namespace is fine; add more HTTPRoutes later for more services.
+The HTTPS listener on port **8443** maps to Traefik's `websecure` entrypoint —
+this is where the host delivers passthrough TLS.
+
+```bash
+cat <<YAML | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: { name: web-gateway, namespace: $NS }
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: web
+      protocol: HTTP
+      port: 8000
+      allowedRoutes: { namespaces: { from: Same } }
+    - name: websecure
+      protocol: HTTPS
+      port: 8443
+      tls:
+        mode: Terminate
+        certificateRefs: [{ name: wildcard-tls }]
+      allowedRoutes: { namespaces: { from: Same } }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: { name: $NAME, namespace: $NS }
+spec:
+  parentRefs:
+    - { name: web-gateway, sectionName: web }
+    - { name: web-gateway, sectionName: websecure }
+  hostnames: ["$HOST"]
+  rules:
+    - backendRefs: [{ name: $NAME, port: $PORT }]
+YAML
+```
+
+Confirm both listeners are programmed and the route attached:
+
+```bash
+kubectl get gateway web-gateway -n "$NS" \
+  -o jsonpath='{range .status.listeners[*]}{.name}={.attachedRoutes} routes{"\n"}{end}'
+```
+
+### 4. Self-test from inside the cluster (do this BEFORE telling the user to open a browser)
+
+This proves the vCluster wiring is correct and isolates it from host/DNS issues.
+It hits the Traefik ClusterIP on :443 — the exact path the host forwards to.
+
+```bash
+TRAEFIK_IP=$(kubectl get svc traefik -n kube-system -o jsonpath='{.spec.clusterIP}')
+kubectl run nettest -n "$NS" --image=curlimages/curl:8.11.1 --restart=Never \
+  --command -- sleep 300
+kubectl wait --for=condition=Ready pod/nettest -n "$NS" --timeout=60s || sleep 10
+
+# HTTPS (TLS terminated by vCluster Traefik) — expect HTTP 200
+kubectl exec -n "$NS" nettest -- curl -sk -o /dev/null -w "https -> %{http_code}\n" \
+  --resolve "$HOST:443:$TRAEFIK_IP" "https://$HOST/"
+# HTTP — expect HTTP 200
+kubectl exec -n "$NS" nettest -- curl -s -o /dev/null -w "http  -> %{http_code}\n" \
+  --resolve "$HOST:80:$TRAEFIK_IP" "http://$HOST/"
+
+kubectl delete pod nettest -n "$NS" --now
+```
+
+If you get `200`, the vCluster side is correct.
+
+### 5. Tell the user how to reach it
+
+```
+URL:  https://<HOST>
+- Chrome/Edge: *.localhost auto-resolves to 127.0.0.1, just open it.
+- Firefox/Safari (or non-.localhost domains): add to /etc/hosts:
+      127.0.0.1  <HOST>
+- You'll see a self-signed cert warning — click through (expected for dev).
+- Requires the host to expose colima's Traefik on :443 (the cluster's default).
+```
+
+---
+
+## Troubleshooting (map symptom -> cause)
+
+- **Self-test `https`/`http` returns nothing / curl exit 7, `no available server`**
+  Backend endpoint not ready. Check step "readiness" above. 99% of the time the
+  Deployment is missing a `readinessProbe`. Confirm with the endpointslice query.
+
+- **Can't connect to the Traefik ClusterIP at all (exit 7 on every host)**
+  vCluster Traefik's own Pod is `Ready=False`, so its Service has no ready
+  endpoint. Check:
+  ```bash
+  kubectl get pod -n kube-system -l app.kubernetes.io/name=traefik \
+    -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
+  ```
+  If `False` while `curl http://<traefikPodIP>:8080/ping` returns `OK`, the
+  readiness probe is too aggressive for this node. This is a **cluster-level**
+  issue (Traefik is managed by ArgoCD — patching it in-cluster is reverted by
+  self-heal). Report it to the user; the fix lives in the `k3s-bootstrap` repo
+  (loosen Traefik's `readinessProbe`), not in your namespace.
+
+- **Browser fails but the in-cluster self-test passes**
+  The vCluster is fine; the problem is host-side: colima not exposing :443,
+  missing `/etc/hosts` entry, or the host Traefik / TLSRoute. Tell the user to
+  check those — don't keep changing vCluster manifests.
+
+- **TLS handshake works but wrong/empty response**
+  The HTTPRoute `hostnames` must match the SNI exactly and end in
+  `.$CLUSTER_DOMAIN` so the host's passthrough TLSRoute selects it.
+
+## Cleanup
+
+```bash
+kubectl delete namespace "$NS"
+```

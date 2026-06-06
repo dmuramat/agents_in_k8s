@@ -1,0 +1,30 @@
+{{- if and .Values.agentConfig.enabled .Values.vcluster.enabled }}
+# Bundled agent skills, authored once as charts/agent-env/files/skills/<name>/SKILL.md
+# and delivered to every supported CLI from that single source:
+#   - Claude Code: ~/.claude/skills/<name>/SKILL.md        (key "<name>")
+#   - Gemini CLI:  ~/.gemini/commands/<name>.toml          (key "<name>.toml")
+#   - OpenCode:    ~/.config/opencode/commands/<name>.md   (key "<name>.md")
+# The TOML/MD variants are generated here so the SKILL.md stays the only thing to edit.
+# (agent-pod.yaml mounts these keys into the right paths via subPath.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-skills
+  namespace: {{ .Values.name }}
+data:
+{{- range $path, $_ := .Files.Glob "files/skills/**/SKILL.md" }}
+  {{- $name := dir $path | base }}
+  {{- $content := $.Files.Get $path }}
+  {{- $desc := $content | regexFind "description: .*" | trimPrefix "description: " }}
+  {{- $body := regexReplaceAll "(?s)^---.*?---\n" $content "" }}
+  # --- {{ $name }} (Claude Code skill, verbatim source) ---
+  {{ $name }}: |
+{{ $content | indent 4 }}
+  # --- {{ $name }} (Gemini CLI command) ---
+  {{ $name }}.toml: |
+{{ printf "description = '''%s'''\nprompt = '''\n%s'''\n" $desc $body | indent 4 }}
+  # --- {{ $name }} (OpenCode command) ---
+  {{ $name }}.md: |
+{{ printf "---\ndescription: >-\n  %s\n---\n%s" $desc $body | indent 4 }}
+{{- end }}
+{{- end }}
