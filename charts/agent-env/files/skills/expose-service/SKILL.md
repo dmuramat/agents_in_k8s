@@ -236,8 +236,15 @@ URL:  https://<HOST>
   ```bash
   kubectl patch svc <svc> -n <ns> -p '{"spec":{"publishNotReadyAddresses":true}}'
   ```
+  ⚠️ Use `publishNotReadyAddresses: true` ONLY as a throwaway, hot-test unblock
+  while poking at things live in the vCluster. NEVER commit it into production
+  manifests/charts — it permanently routes traffic to not-ready pods (during
+  rollouts, crashes, slow starts), defeating readiness gating. It is a sandbox
+  band-aid, not a fix.
+
   Mostly seen only in emulated/sandbox vClusters; a real vCluster syncs the
-  condition correctly, so don't bake this into normal manifests.
+  condition correctly. Maintainers can confirm on the real cluster with
+  `k3s-bootstrap/scripts/check-readiness-sync.sh` (PASS = syncing works).
 
 - **Can't connect to the Traefik ClusterIP at all (exit 7 on every host)**
   vCluster Traefik's own Pod shows `Ready=False`, so its Service has no ready
