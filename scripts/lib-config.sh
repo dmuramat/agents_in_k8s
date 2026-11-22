@@ -90,7 +90,7 @@ collect_agent_repo_paths() {
   shopt -s nullglob
   local f
   for f in "${CONFIG_REPO_ROOT}"/agents/*.yaml; do
-    sed -nE 's/^[[:space:]]*-?[[:space:]]*hostPath:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p' "${f}"
+    sed -nE 's/[[:space:]]+$//; s/^[[:space:]]*-?[[:space:]]*hostPath:[[:space:]]*"?([^"]*)"?$/\1/p' "${f}"
   done
   shopt -u nullglob
 }
